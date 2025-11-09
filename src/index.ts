@@ -5,6 +5,7 @@ import { PasswordUI } from "@openauthjs/openauth/ui/password";
 import { createSubjects } from "@openauthjs/openauth/subject";
 import { object, string } from "valibot";
 import { THEME_VERCEL } from "@openauthjs/openauth/ui/theme";
+import { MicrosoftProvider } from "@openauthjs/openauth/provider/microsoft";
 
 // This value should be shared between the OpenAuth server Worker and other
 // client Workers that you connect to it, so the types and schema validation are
@@ -58,11 +59,25 @@ export default {
             },
           }),
         ),
+        microsoft: MicrosoftProvider({
+          tenant: "1234567890",
+          clientID: "1234567890",
+          clientSecret: "0987654321",
+          scopes: ["openid", "profile", "email", "offline_access", "User.Read"],
+        }),
       },
       theme: THEME_VERCEL,
       success: async (ctx, value) => {
+        let email: string;
+        if (value.provider === "password") {
+          email = value.email;
+        } else if (value.provider === "microsoft") {
+          email = await getMicrosoftEmail(value.tokenset.access);
+        } else {
+          throw new Error("Unsupported provider");
+        }
         return ctx.subject("user", {
-          id: await getOrCreateUser(env, value.email),
+          id: await getOrCreateUser(env, email),
         });
       },
     }).fetch(request, env, ctx);
@@ -85,4 +100,29 @@ async function getOrCreateUser(env: Env, email: string): Promise<string> {
   }
   console.log(`Found or created user ${result.id} with email ${email}`);
   return result.id;
+}
+
+async function getMicrosoftEmail(accessToken: string): Promise<string> {
+  const profileResponse = await fetch(
+    "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName",
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  );
+  if (!profileResponse.ok) {
+    throw new Error(
+      `Unable to fetch Microsoft profile: ${profileResponse.status}`,
+    );
+  }
+  const profile = await profileResponse.json<{
+    mail?: string;
+    userPrincipalName?: string;
+  }>();
+  const email = profile.mail ?? profile.userPrincipalName;
+  if (!email) {
+    throw new Error("Microsoft profile did not include an email address");
+  }
+  return email;
 }
